@@ -1,4 +1,10 @@
-"""Core converter module for PDF to Markdown conversion."""
+"""Core converter module for PDF to Markdown conversion.
+
+The converter is an orchestrator: it validates input, resolves the output
+layout, picks a conversion :class:`~pdf2dotmd.backends.base.Backend` (default
+``pdfplumber``; ``docling`` when the extra is installed), and writes the result.
+The heavy lifting lives in the backends — see :mod:`pdf2dotmd.plugins`.
+"""
 
 from __future__ import annotations
 
@@ -7,37 +13,16 @@ import os
 from pathlib import Path
 from typing import Optional
 
-try:
-    import pdfplumber  # type: ignore[import-not-found]
-except ImportError:  # pragma: no cover
-    pdfplumber = None  # type: ignore[assignment]
-
-from .image_extractor import ImageExtractor
-from .layout_analyzer import LayoutAnalyzer
-from .page_processor import PageProcessor
-from .table_processor import TableProcessor
-from .utils import clean_markdown_content
+from .backends.base import ConversionContext
+from .plugins import (
+    INSTALL_HINT_TEMPLATE,
+    KNOWN_BACKENDS,
+    BackendNotFoundError,
+    BackendNotInstalledError,
+    resolve_backend,
+)
 
 logger = logging.getLogger(__name__)
-
-
-def _parse_page_range(page_spec: str, total_pages: int) -> list[int]:
-    """Parse a page range string like '1-5,8,10-12' into 0-based page indices."""
-    indices: list[int] = []
-    for part in page_spec.split(","):
-        part = part.strip()
-        if "-" in part:
-            start, end = part.split("-", 1)
-            start = int(start.strip())
-            end = int(end.strip())
-            for p in range(start, end + 1):
-                if 1 <= p <= total_pages:
-                    indices.append(p - 1)
-        else:
-            p = int(part)
-            if 1 <= p <= total_pages:
-                indices.append(p - 1)
-    return sorted(set(indices))
 
 
 class PdfToMarkdownConverter:
@@ -53,6 +38,8 @@ class PdfToMarkdownConverter:
         output_path: Optional[str] = None,
         ignore_images: bool = False,
         pages: Optional[str] = None,
+        *,
+        backend: str = "auto",
     ) -> str:
         if not os.path.exists(input_path):
             raise FileNotFoundError(f"Input file does not exist: {input_path}")
@@ -60,70 +47,37 @@ class PdfToMarkdownConverter:
         if not input_path.lower().endswith(".pdf"):
             raise ValueError(f"Only .pdf is supported: {input_path}")
 
-        if pdfplumber is None:
-            raise RuntimeError(
-                "Missing required dependency 'pdfplumber'. Please run: pip install pdfplumber"
-            )
-
         self._setup_output_structure(input_path, output_path, ignore_images)
 
-        layout_analyzer = LayoutAnalyzer()
-        table_processor = TableProcessor()
-        image_extractor = (
-            ImageExtractor(self.assets_dir) if not ignore_images and self.assets_dir else None
-        )
-        page_processor = PageProcessor(
-            layout_analyzer=layout_analyzer,
-            table_processor=table_processor,
-            image_extractor=image_extractor,
+        try:
+            backend_obj = resolve_backend(backend, input_path=input_path)
+        except BackendNotInstalledError:
+            raise RuntimeError(INSTALL_HINT_TEMPLATE.format(name=backend))
+        except BackendNotFoundError:
+            available = ", ".join(["auto", "pdfplumber", *sorted(KNOWN_BACKENDS)])
+            raise RuntimeError(f"Unknown backend '{backend}'. Available: {available}")
+
+        ctx = ConversionContext(
+            input_path=input_path,
+            output_path=output_path,
             ignore_images=ignore_images,
+            pages=pages,
+            output_folder=self.output_folder,
+            assets_dir=self.assets_dir,
         )
 
-        output_lines: list[str] = []
+        result = backend_obj.convert(ctx)
+        markdown_content = result.markdown
 
-        with pdfplumber.open(input_path) as pdf:
-            total_pages = len(pdf.pages)
-
-            if total_pages == 0:
-                logger.warning("PDF has no pages: %s", input_path)
-                markdown_content = "\n"
-                self._write_output(markdown_content, self._get_final_output_path(input_path, output_path))
-                return markdown_content
-
-            # Determine page indices
-            if pages:
-                page_indices = _parse_page_range(pages, total_pages)
-                if not page_indices:
-                    raise ValueError(f"No valid pages in range '{pages}' (total: {total_pages})")
-            else:
-                page_indices = list(range(total_pages))
-
-            # Check if the PDF is scanned (no text on any page)
-            has_text = False
-            for idx in page_indices:
-                if pdf.pages[idx].chars:
-                    has_text = True
-                    break
-            if not has_text:
-                logger.warning(
-                    "PDF appears to have no text layer (possibly scanned). "
-                    "OCR is not supported. Output may be empty."
-                )
-
-            for idx in page_indices:
-                page = pdf.pages[idx]
-                page_number = idx + 1
-                logger.debug("Processing page %d/%d", page_number, total_pages)
-
-                page_lines = page_processor.process_page(page, page_number)
-                output_lines.extend(page_lines)
-
-        markdown_content = clean_markdown_content(output_lines)
         final_output_path = self._get_final_output_path(input_path, output_path)
         self._write_output(markdown_content, final_output_path)
         self._cleanup_empty_assets_dir()
 
-        logger.info("Conversion completed, output file: %s", final_output_path)
+        logger.info(
+            "Conversion completed (backend=%s), output file: %s",
+            backend_obj.name,
+            final_output_path,
+        )
         return markdown_content
 
     def _setup_output_structure(

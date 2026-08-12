@@ -43,6 +43,39 @@ pdf2dotmd input.pdf -p 1-5,8,10-12
 pdf2dotmd input.pdf -v
 ```
 
+## Backends & Plugins
+
+The default install is lightweight (pdfplumber only) and converts **born-digital**
+PDFs. For **scanned PDFs (OCR)**, **complex layouts**, and **borderless/complex
+tables**, install the optional [docling](https://github.com/docling-project/docling)
+backend (TableFormer + DocLayNet + OCR). It requires **Python >=3.10**.
+
+```bash
+# List available and installed backends
+pdf2dotmd plugin list
+
+# Install the docling backend (runs pip install pdf2dotmd[docling])
+pdf2dotmd plugin install docling
+
+# Show details / uninstall
+pdf2dotmd plugin info docling
+pdf2dotmd plugin uninstall docling
+```
+
+Once installed, choose a backend explicitly or let `auto` pick:
+
+```bash
+# Use docling directly
+pdf2dotmd scanned.pdf --backend docling -o out.md
+
+# auto (default): born-digital PDFs use pdfplumber; scanned PDFs use docling
+pdf2dotmd document.pdf -o out.md
+```
+
+Third-party packages can register their own backend via the
+`pdf2dotmd.backends` entry-point group — they appear in `plugin list`
+automatically.
+
 ## How It Works
 
 1. **Character extraction** — uses [pdfplumber](https://github.com/jsvine/pdfplumber) to extract individual characters with position data
@@ -55,9 +88,12 @@ pdf2dotmd input.pdf -v
 
 ## Limitations
 
-- **Scanned PDFs** — OCR is not supported; scanned/image-only PDFs will produce empty output
+- **Scanned PDFs (default backend)** — the default pdfplumber backend has no OCR;
+  scanned/image-only PDFs produce empty output. Install the docling backend
+  (`pdf2dotmd plugin install docling`, Python >=3.10) to add OCR.
 - **Encrypted PDFs** — password-protected PDFs are not supported
-- **Complex layouts** — highly irregular layouts may not parse perfectly
+- **Complex layouts** — the default backend may not parse highly irregular
+  layouts perfectly; the docling backend handles these better
 
 ## License
 

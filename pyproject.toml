@@ -25,6 +25,15 @@ classifiers = [
 ]
 dependencies = ["pdfplumber>=0.11.0"]
 
+[project.optional-dependencies]
+# ML backend: OCR + complex tables + layout (TableFormer/DocLayNet).
+# docling v2 requires Python >=3.10; the core package stays >=3.8.
+docling = ["docling>=2.20.0"]
+
+[project.entry-points."pdf2dotmd.backends"]
+pdfplumber = "pdf2dotmd.backends.pdfplumber_backend:PdfPlumberBackend"
+docling = "pdf2dotmd.backends.docling_backend:DoclingBackend"
+
 [project.urls]
 Homepage = "https://github.com/HNRobert/pdf2dotmd"
 Repository = "https://github.com/HNRobert/pdf2dotmd"
