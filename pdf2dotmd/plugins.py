@@ -20,7 +20,7 @@ from __future__ import annotations
 import importlib.metadata
 import logging
 from dataclasses import dataclass
-from typing import Optional, Type
+from typing import Any, Optional, Type
 
 try:
     import pdfplumber  # type: ignore[import-not-found]
@@ -77,7 +77,11 @@ def _entry_points_for(group: str):
     eps = importlib.metadata.entry_points()
     if hasattr(eps, "select"):  # Python 3.10+
         return eps.select(group=group)
-    return eps.get(group, [])  # Python 3.8/3.9 (dict-style)
+    # Python 3.8/3.9: entry_points() returns Dict[str, list[EntryPoint]].
+    # The modern importlib.metadata stubs type it as ``EntryPoints`` (which has
+    # no ``.get``), so cast to the legacy dict shape this branch actually serves.
+    legacy: dict[str, Any] = eps  # type: ignore[assignment]
+    return legacy.get(group, [])
 
 
 def _probe_available(cls: Type) -> bool:

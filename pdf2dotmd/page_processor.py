@@ -28,11 +28,54 @@ class PageProcessor:
         self.table_processor = table_processor
         self.image_extractor = image_extractor
         self.ignore_images = ignore_images
+        # Document-wide heading context (set by the backend before rendering).
+        # When set, heading levels come from this map instead of per-page
+        # inference, and at most one H1 is emitted across the whole document.
+        self._heading_size_map: Optional[dict] = None
+        self._h1_emitted: bool = False
 
-    def process_page(self, page, page_number: int) -> list[str]:
-        """Process a pdfplumber page and return Markdown lines."""
-        # Analyze layout to get ordered text blocks
-        blocks = self.layout_analyzer.analyze(page, page_number)
+    def set_heading_context(self, heading_size_map: dict) -> None:
+        """Install a document-wide ``{font_size: level}`` map (from
+        :meth:`LayoutAnalyzer.compute_heading_size_map`) and reset the
+        single-H1 guard. When set, per-page heading inference is bypassed."""
+        self._heading_size_map = heading_size_map or None
+        self._h1_emitted = False
+
+    def _levels_from_map(self, blocks: list[TextBlock]) -> dict[int, int]:
+        """Heading levels from the document-wide size map, guaranteeing a
+        single H1: the first level-1 block wins, any later ones are demoted."""
+        if not self._heading_size_map:
+            return {}
+        levels: dict[int, int] = {}
+        for idx, block in enumerate(blocks):
+            if block.is_header or block.is_footer:
+                continue
+            level = self._heading_size_map.get(round(block.font_size, 1))
+            if level is None:
+                continue
+            if level == 1:
+                if self._h1_emitted:
+                    level = 2
+                else:
+                    self._h1_emitted = True
+            levels[idx] = level
+        return levels
+
+    def process_page(
+        self,
+        page,
+        page_number: int,
+        blocks: Optional[list[TextBlock]] = None,
+    ) -> list[str]:
+        """Process a pdfplumber page and return Markdown lines.
+
+        If ``blocks`` is supplied (pre-analyzed by the caller), that analysis
+        is reused instead of re-running layout analysis — needed so the
+        document-wide heading map keys match the blocks being rendered.
+        """
+        # Analyze layout to get ordered text blocks (unless caller passed them)
+        if blocks is None:
+            blocks = self.layout_analyzer.analyze(page, page_number)
 
         # Extract tables and their bounding boxes
         tables_with_bbox = self.table_processor.extract_tables(page)
@@ -61,8 +104,13 @@ class PageProcessor:
             and not any(b.overlaps_bbox(tb, threshold=0.6) for tb in table_bboxes)
         ]
 
-        # Infer heading levels
-        heading_levels = LayoutAnalyzer.infer_heading_levels(blocks)
+        # Infer heading levels: prefer the document-wide size map (consistent
+        # across pages, single H1) when the backend installed one; otherwise
+        # fall back to per-page inference.
+        if self._heading_size_map is not None:
+            heading_levels = self._levels_from_map(blocks)
+        else:
+            heading_levels = LayoutAnalyzer.infer_heading_levels(blocks)
 
         # Build output by interleaving text blocks, tables, and images
         lines: list[str] = []

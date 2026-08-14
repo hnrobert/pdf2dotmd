@@ -18,7 +18,7 @@ from ..image_extractor import ImageExtractor
 from ..layout_analyzer import LayoutAnalyzer
 from ..page_processor import PageProcessor
 from ..table_processor import TableProcessor
-from ..utils import clean_markdown_content, parse_page_range
+from ..utils import clean_markdown_content, parse_page_range, sanitize_markdown
 from .base import BackendResult, ConversionContext
 
 logger = logging.getLogger(__name__)
@@ -84,12 +84,29 @@ class PdfPlumberBackend:
                     "(possibly scanned); output may be empty."
                 )
 
+            # Two-phase rendering: analyze every selected page once (caching
+            # the blocks), build a document-wide heading-size map so a given
+            # font size maps to the same heading level on every page (and only
+            # one H1 is emitted), then render each page from its cached blocks.
+            cached: list[tuple] = []  # (page, page_number, blocks)
+            all_blocks: list = []
             for idx in page_indices:
                 page = pdf.pages[idx]
                 page_number = idx + 1
-                logger.debug("Processing page %d/%d", page_number, total_pages)
-                page_lines = page_processor.process_page(page, page_number)
+                blocks = layout_analyzer.analyze(page, page_number)
+                cached.append((page, page_number, blocks))
+                all_blocks.extend(blocks)
+
+            page_processor.set_heading_context(
+                LayoutAnalyzer.compute_heading_size_map(all_blocks)
+            )
+
+            for page, page_number, blocks in cached:
+                logger.debug("Rendering page %d/%d", page_number, total_pages)
+                page_lines = page_processor.process_page(
+                    page, page_number, blocks=blocks
+                )
                 output_lines.extend(page_lines)
 
-        markdown_content = clean_markdown_content(output_lines)
+        markdown_content = sanitize_markdown(clean_markdown_content(output_lines))
         return BackendResult(markdown=markdown_content)

@@ -137,14 +137,33 @@ class LayoutAnalyzer:
         if not chars:
             return []
 
-        # Sort by y center descending (top of page first), then x
-        sorted_chars = sorted(chars, key=lambda c: (-(c["top"] + c["bottom"]) / 2, c["x0"]))
+        # Some PDF generators emit every glyph twice at the exact same
+        # coordinates (a faux-bold / export artifact). Drop exact duplicate
+        # glyphs first, otherwise each character is doubled in the output.
+        # Two glyphs with identical text and identical position are never
+        # legitimate adjacent characters (those are separated by their
+        # advance width), so this is safe.
+        seen: set = set()
+        deduped: list[dict] = []
+        for c in chars:
+            key = (c["text"], round(c["x0"], 2), round(c["y0"], 2))
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(c)
+        chars = deduped
+
+        # Sort by y center descending (top of page first), then x. Use the same
+        # bottom-origin y0/y1 system that _TextLine stores, so the center-y
+        # comparison below is consistent (top/bottom are top-origin and must
+        # not be mixed in here).
+        sorted_chars = sorted(chars, key=lambda c: (-(c["y0"] + c["y1"]) / 2, c["x0"]))
 
         lines: list[_TextLine] = []
         current_line = _TextLine()
 
         for char in sorted_chars:
-            char_cy = (char["top"] + char["bottom"]) / 2
+            char_cy = (char["y0"] + char["y1"]) / 2
             # Use adaptive tolerance based on font size
             tolerance = max(DEFAULT_Y_TOLERANCE, char.get("size", 12) * 0.4)
 
@@ -476,3 +495,31 @@ class LayoutAnalyzer:
                 heading_map[idx] = level
 
         return heading_map
+
+    @staticmethod
+    def compute_heading_size_map(all_blocks: list[TextBlock]) -> dict:
+        """Build a document-wide ``{font_size: heading_level}`` map.
+
+        Unlike :meth:`infer_heading_levels` (which ranks sizes *per page* and
+        therefore assigns different levels to the same font size on different
+        pages), this ranks the heading sizes once across the whole document so
+        a given font size always maps to the same level. The single largest
+        heading size is level 1; combined with the single-H1 enforcement in
+        :class:`PageProcessor` this yields exactly one ``#`` title per document.
+
+        Returns an empty map when there are no heading-sized blocks.
+        """
+        # Round to 1 decimal: PDF font sizes are "nice" numbers (10, 11, 14,
+        # 18, 26, ...) but pdfplumber reports them with float noise
+        # (17.9999 / 18.0001), which would otherwise split one real size into
+        # several spurious heading ranks.
+        sizes = [
+            round(b.font_size, 1)
+            for b in all_blocks
+            if not b.is_header and not b.is_footer
+        ]
+        if not sizes:
+            return {}
+        body_size = Counter(sizes).most_common(1)[0][0]
+        larger = sorted({s for s in sizes if s > body_size * 1.1}, reverse=True)
+        return {s: i + 1 for i, s in enumerate(larger)}
